@@ -22,7 +22,7 @@ jobs:
           python-version: '3.13' 
           cache: 'pip'
 
-      # Fixes the "No JS runtime" warning in your logs
+      # REQUIRED: yt-dlp needs JavaScript to solve the "n challenge"
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -34,6 +34,8 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
+          # CRITICAL FIX: Force install the latest yt-dlp from source
+          pip install https://github.com/yt-dlp/yt-dlp/archive/master.zip
           pip install -r requirements.txt
 
       - name: Create Config Files
@@ -46,6 +48,8 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        # Note: I see you are running 'action_main.py' in your logs.
+        # Ensure this filename matches your actual python file!
         run: python action_main.py
 
       - name: Save History
