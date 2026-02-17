@@ -138,11 +138,17 @@ def get_transcript(video_id):
     
     # --- METHOD 1: API (Fastest) ---
     try:
-        # Note: API might fail if cookies are required, but we try it first anyway
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        # SMART CHANGE 1: Pass cookies to the Transcript API too!
+        # This was silently failing before because it looked like a bot.
+        if os.path.exists("cookies.txt"):
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, cookies="cookies.txt")
+        else:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            
         text = " ".join([entry['text'] for entry in transcript_list])
         return text
-    except Exception:
+    except Exception as e:
+        logger.warning(f"⚠️ API Method failed: {e}")
         pass # Silent fail to try next method
 
     # --- METHOD 2: yt-dlp (Robust Fallback for Captions) ---
@@ -159,7 +165,9 @@ def get_transcript(video_id):
             'quiet': True,
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'cookiefile': 'cookies.txt', # <--- ADDED THIS
+            'cookiefile': 'cookies.txt',
+            # SMART CHANGE 2: Pretend to be an Android phone to bypass JS challenges
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -205,7 +213,9 @@ def get_transcript(video_id):
             }],
             'outtmpl': filename,
             'quiet': True,
-            'cookiefile': 'cookies.txt', # <--- ADDED THIS
+            'cookiefile': 'cookies.txt',
+            # SMART CHANGE 2 (Again): Android spoofing for audio download
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
