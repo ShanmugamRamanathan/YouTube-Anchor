@@ -24,13 +24,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13' 
-          cache: 'pip' # Caches dependencies to make future runs faster
+          cache: 'pip'
 
-      #- name: Install FFmpeg
-        # Required for the "Nuclear Option" (audio processing) if transcripts fail
-        #run: sudo apt-get install -y ffmpeg
-      - name: Verify FFmpeg is Installed
-        run: ffmpeg -version
+      # --- FFmpeg IS REQUIRED (Restored this step) ---
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install Dependencies
         run: |
@@ -43,15 +41,12 @@ jobs:
 
       - name: Run AI Anchor
         env: 
-          # Connects the Secrets you added in Step 2 to the script
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
 
       - name: Save History
-        # This step commits the updated history.json back to the repo
-        # so the bot remembers what it watched.
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
