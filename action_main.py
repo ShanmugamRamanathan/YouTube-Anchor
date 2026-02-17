@@ -31,17 +31,32 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HISTORY_FILE = Path("history.json")
 
 # --- LOAD FEEDS ---
-try:
-    with open("feeds.json", "r") as f:
-        data = json.load(f)
-        # Handle both list of strings and list of objects
+# First, try to load from the environment variable (for GitHub Actions)
+env_feeds = os.environ.get("FEEDS_JSON")
+
+if env_feeds:
+    try:
+        data = json.loads(env_feeds)
+        # Handle both list formats
         if data and isinstance(data[0], dict):
             YOUTUBE_FEEDS = [item["url"] for item in data if "url" in item]
         else:
             YOUTUBE_FEEDS = data
-except Exception as e:
-    logger.warning(f"⚠️ feeds.json error: {e}. Using empty list.")
-    YOUTUBE_FEEDS = []
+    except Exception as e:
+        logger.error(f"❌ Error parsing FEEDS_JSON env var: {e}")
+        YOUTUBE_FEEDS = []
+else:
+    # Fallback to local file (for local testing)
+    try:
+        with open("feeds.json", "r") as f:
+            data = json.load(f)
+            if data and isinstance(data[0], dict):
+                YOUTUBE_FEEDS = [item["url"] for item in data if "url" in item]
+            else:
+                YOUTUBE_FEEDS = data
+    except Exception as e:
+        logger.warning(f"⚠️ feeds.json error: {e}. Using empty list.")
+        YOUTUBE_FEEDS = []
 
 # --- FALLBACK GENERATOR (Master List) ---
 def generate_with_fallback(prompt_parts):
@@ -52,7 +67,6 @@ def generate_with_fallback(prompt_parts):
     # MASTER PRIORITY LIST
     models_to_try = [
         # --- TIER 1: The Smartest (Try these first) ---
-        'gemini-2.5-flash'
         'gemini-2.0-flash-exp',       # Often smartest & fastest
         'gemini-1.5-pro',             # Best for complex reasoning
         'gemini-1.5-flash',           # Standard workhorse
@@ -133,89 +147,102 @@ def save_history(history):
     except Exception as e:
         logger.error(f"Failed to save history: {e}")
 
+# --- UPDATED TRANSCRIPT LOGIC ---
 def get_transcript(video_id):
     logger.info(f"🕵️ Fetching transcript for {video_id}...")
     
     # --- METHOD 1: API (Fastest) ---
+    # Attempt A: Standard API (No Cookies)
     try:
-        # SMART CHANGE 1: Pass cookies to the Transcript API too!
-        # This was silently failing before because it looked like a bot.
-        if os.path.exists("cookies.txt"):
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, cookies="cookies.txt")
-        else:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
         text = " ".join([entry['text'] for entry in transcript_list])
         return text
-    except Exception as e:
-        logger.warning(f"⚠️ API Method failed: {e}")
-        pass # Silent fail to try next method
+    except Exception:
+        # Attempt B: API WITH Cookies (Fixes some "Sign In" errors)
+        if os.path.exists("cookies.txt"):
+            try:
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, cookies="cookies.txt")
+                text = " ".join([entry['text'] for entry in transcript_list])
+                return text
+            except Exception:
+                pass
 
     # --- METHOD 2: yt-dlp (Robust Fallback for Captions) ---
+    import yt_dlp
+    
+    # Helper to clean VTT files
+    def clean_vtt(filename):
+        if not os.path.exists(filename): return None
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                content = f.read()
+            os.remove(filename)
+            lines = content.splitlines()
+            text = []
+            for line in lines:
+                if "-->" not in line and "WEBVTT" not in line and line.strip():
+                    clean_line = line.replace("<c>", "").replace("</c>", "").replace("&nbsp;", " ")
+                    clean_line = re.sub(r'\[.*?\]', '', clean_line)
+                    clean_line = re.sub(r'\(.*?\)', '', clean_line)
+                    text.append(clean_line)
+            return " ".join(text)
+        except: return None
+
+    # Attempt A: "Android" Client (Bypasses "n-challenge", NO COOKIES ALLOWED)
     try:
-        import yt_dlp
-        time.sleep(random.uniform(2, 5)) 
-        
         url = f"https://youtu.be/{video_id}"
+        filename = f"transcript_{video_id}_android"
         ydl_opts = {
-            'skip_download': True,
-            'writeautomaticsub': True,
-            'subtitleslangs': ['en'],
-            'outtmpl': f'transcript_{video_id}',
-            'quiet': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'cookiefile': 'cookies.txt',
-            # SMART CHANGE 2: Pretend to be an Android phone to bypass JS challenges
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+            'skip_download': True, 'writeautomaticsub': True, 'subtitleslangs': ['en'],
+            'outtmpl': filename, 'quiet': True, 'nocheckcertificate': True, 'ignoreerrors': True,
+            # CRITICAL: Use Android client, DO NOT pass cookies here
+            'extractor_args': {'youtube': {'player_client': ['android']}},
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        # Check for caption file
-        found_text = None
-        for file in os.listdir("."):
-            if file.startswith(f"transcript_{video_id}") and file.endswith(".vtt"):
-                with open(file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                os.remove(file) # Cleanup
-                
-                # Cleaning VTT junk
-                lines = content.splitlines()
-                text = []
-                for line in lines:
-                    if "-->" not in line and "WEBVTT" not in line and line.strip():
-                        clean_line = line.replace("<c>", "").replace("</c>", "").replace("&nbsp;", " ")
-                        clean_line = re.sub(r'\[.*?\]', '', clean_line)
-                        clean_line = re.sub(r'\(.*?\)', '', clean_line)
-                        text.append(clean_line)
-                found_text = " ".join(text)
-                break
-        
-        if found_text:
-            return found_text
-
+        # Check for file (yt-dlp adds .en.vtt or .vtt)
+        for f in os.listdir("."):
+            if f.startswith(filename) and f.endswith(".vtt"):
+                return clean_vtt(f)
     except Exception as e:
-        logger.warning(f"⚠️ Method 2 failed: {e}")
+        logger.warning(f"⚠️ Android Method failed: {e}")
+
+    # Attempt B: "Web" Client (Standard, WITH COOKIES for age-gated videos)
+    try:
+        url = f"https://youtu.be/{video_id}"
+        filename = f"transcript_{video_id}_web"
+        ydl_opts = {
+            'skip_download': True, 'writeautomaticsub': True, 'subtitleslangs': ['en'],
+            'outtmpl': filename, 'quiet': True, 'nocheckcertificate': True, 'ignoreerrors': True,
+            # CRITICAL: Use Web client + Cookies
+            'extractor_args': {'youtube': {'player_client': ['web']}},
+        }
+        if os.path.exists("cookies.txt"):
+            ydl_opts['cookiefile'] = 'cookies.txt'
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+            
+        for f in os.listdir("."):
+            if f.startswith(filename) and f.endswith(".vtt"):
+                return clean_vtt(f)
+    except Exception as e:
+        logger.warning(f"⚠️ Web Method failed: {e}")
 
     # --- METHOD 3: The Nuclear Option (Download Audio + Gemini Listen) ---
     try:
-        import yt_dlp
         logger.info("☢️ Nuclear Option: Listening to audio...")
-        
         filename = f"audio_{video_id}"
+        
+        # Use Android client for audio download too (No Cookies = No Conflict)
         ydl_opts = {
             'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '64',
-            }],
+            'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '64'}],
             'outtmpl': filename,
             'quiet': True,
-            'cookiefile': 'cookies.txt',
-            # SMART CHANGE 2 (Again): Android spoofing for audio download
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+            # Android client is usually safer for downloads on cloud servers
+            'extractor_args': {'youtube': {'player_client': ['android']}}
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
