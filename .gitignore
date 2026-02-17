@@ -2,5 +2,4 @@
 venv/
 __pycache__/
 *.mp3
-history.json
 feeds.json
